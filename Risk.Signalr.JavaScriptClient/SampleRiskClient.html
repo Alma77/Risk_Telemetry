@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<head>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/5.0.3/signalr.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/underscore@1.12.0/underscore-min.js"></script>
+    <script src="risk_client.js"></script>
+    <script>
+        class MyRiskClient extends AbstractRiskClient {
+
+            // returns the position of where the next army should be deployed
+            choose_deploy(board) {
+                console.log(this.get_deployable(board));
+                return _.sample(this.get_deployable(board)).location;
+            }
+
+            // returns whether this player should attack given the current board
+            should_attack(board) {
+                return _.sample([true, false]);
+            }
+
+            // returns the source and target of attack
+            choose_attack(board) {
+                let [source, target] = _.sample(this.get_attacks(board));
+                return [source.location, target.location];
+            }
+
+        }
+        new MyRiskClient().start();
+    </script>
+</head>
+<body>
+</body>
+</html>

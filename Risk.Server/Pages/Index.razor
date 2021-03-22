@@ -1,0 +1,268 @@
+﻿@page "/"
+@using Microsoft.AspNetCore.SignalR.Client
+@using Microsoft.Extensions.Logging;
+@using Microsoft.Extensions.Configuration
+@using MatBlazor
+@inject ILoggerProvider LoggerProvider
+@inject IConfiguration config
+
+<div>
+    @if(savedSecretCode == false)
+    {
+        <input type="text" @bind="secretCode" placeholder="secret code" />
+        <button @onclick="SaveSecretCode">Save Secret Code</button>
+        <br/>
+    }
+    @if (playerLogic == null)
+    {
+        <span>Player Name:</span><input type="text" @bind="userInput" />
+        <button @onclick="SignupAsync">Signup</button>
+    }
+    else
+    {
+        <h3>Joined game as @playerLogic.MyPlayerName</h3>
+    }
+    <br />
+    @if (Status == null || Status.GameState == GameState.Joining || Status.GameState == GameState.GameOver)
+    {
+        <div class="grid-container game-status">
+            <div class="Legend">Game Start Options</div>
+            <div class="Label1">Board Height</div>
+            <div class="Value1">
+                <input type="number" @bind="startOptions.Height" />
+            </div>
+            <div class="Label2">Board Height</div>
+            <div class="Value2">
+                <input type="number" @bind="startOptions.Width" />
+            </div>
+            <div class="Label3">Number of Armies</div>
+            <div class="Value3">
+                <input type="number" @bind="startOptions.StartingArmiesPerPlayer" />
+            </div>
+            <div class="Label4">Armies Deployed Per Turn</div>
+            <div class="Value4">
+                <input type="number" @bind="startOptions.ArmiesDeployedPerTurn" />
+            </div>
+        </div>
+    }
+    @if (Status == null || (Status.GameState != GameState.Deploying && Status.GameState != GameState.Attacking))
+    {
+        <MatButton Raised="true" OnClick="StartGameAsync">@actionButtonText</MatButton>
+    }
+</div>
+
+
+
+@if (Status != null)
+{
+    <div class="playerStats">
+        <h5>Game State: @Status.GameState</h5>
+        <table cellpadding="2px, 10px">
+            <thead>
+                <tr>
+                    <th style="min-width: 200px;">Player</th>
+                    <th>Cells</th>
+                    <th>Armies</th>
+                    <th>Score</th>
+                </tr>
+            </thead>
+            @if(Status.GameState == GameState.GameOver)
+            {
+                playerStats = Status.PlayerStats.OrderByDescending(p => p.Score);
+            }
+            else
+            {
+                playerStats = Status.PlayerStats;
+            }
+            @foreach (var p in playerStats)
+            {
+            <tr style="@($" background-color:{ColorGenerator.GetColor(p.Name)}")">
+                @if (currentPlayerName == p.Name && Status.GameState != GameState.GameOver)
+                {
+                    <td><strong>⭐ @p.Name.Substring(0, Math.Min(20, p.Name.Length)) ⭐</strong></td>
+                }
+                else
+                {
+                    <td>@p.Name</td>
+                }
+                <td style="text-align: right">@p.Territories</td>
+                <td style="text-align: right">@p.Armies</td>
+                <td style="text-align: right">@p.Score.ToString("n0")</td>
+            </tr>
+            }
+        </table>
+    </div>
+
+    <div class="board-grid-container">
+        <table border="1px" cellpadding="10px">
+            @for (var row = 0; row <= MaxRow; row++)
+            {
+                <tr>
+                    @for (var col = 0; col <= MaxCol; col++)
+                    {
+                        var cell = Status.Board.First(t => t.Location == new Location(row, col));
+                        var style = (MarkupString)(string.IsNullOrEmpty(cell.OwnerName)
+                                   ? string.Empty
+                                   : $"background-color:{ColorGenerator.GetColor(cell.OwnerName)}");
+
+                        <td class="cell" style="@style">
+                            <div class="location">@cell.Location</div>
+                            <div class="armies">@cell.Armies</div>
+                        </td>
+                    }
+                </tr>
+            }
+        </table>
+    </div>
+}
+
+<MatSlideToggle @bind-Value="@showLog"></MatSlideToggle><span>Show Log</span>
+@if(showLog)
+{
+<h5>List of Messages</h5>
+<ul>
+    @foreach (var message in messages)
+    {
+        <li>@message</li>
+    }
+</ul>
+}
+
+
+@code{
+
+    public IEnumerable<PlayerStats> playerStats;
+    public GameStartOptions startOptions = new GameStartOptions()
+    {
+        Height = 10,
+        Width = 10,
+        StartingArmiesPerPlayer = 250,
+        ArmiesDeployedPerTurn = 5
+    };
+    public string actionButtonText = "Start Game";
+    public string ServerAddress { get; set; }
+    private HubConnection hubConnection;
+    private List<string> messages = new List<string>();
+    private string userInput;
+    private string logMessages;
+    private string secretCode;
+    private GameStatus Status;
+    private PlayerLogic playerLogic;
+    private int MaxRow = 0;
+    private int MaxCol = 0;
+    private bool savedSecretCode = false;
+    private bool showLog = false;
+    private string currentPlayerName = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        ServerAddress = config["serverAddress"] ?? "localhost:5000";
+        if(config["alwaysUseFreshSecretCode"] != "true")
+        {
+            secretCode = "banana55";
+        }
+        userInput = "Built-In";
+
+        var connectionUrl = "http://" + ServerAddress;
+        if(ServerAddress.Contains("https://"))
+            connectionUrl = ServerAddress;
+
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(connectionUrl + "/riskhub")
+            .ConfigureLogging(logBuilder =>
+            {
+                logBuilder.AddDebug();
+            })
+            .Build();
+
+        hubConnection.On<string, string>(MessageTypes.SendMessage, (user, message) =>
+        {
+            var encodedMsg = $"{user}: {message}";
+            messages.Add(encodedMsg);
+            StateHasChanged();
+        });
+
+        hubConnection.On<IEnumerable<BoardTerritory>>(MessageTypes.YourTurnToDeploy, async (board) =>
+        {
+            var deployLocation = playerLogic.WhereDoYouWantToDeploy(board);
+            await DeployAsync(deployLocation);
+        });
+
+        hubConnection.On<GameStatus>(MessageTypes.SendStatus, status =>
+        {
+            Status = status;
+            MaxRow = status.Board.Max(t => t.Location.Row);
+            MaxCol = status.Board.Max(t => t.Location.Column);
+            if (Status.GameState == GameState.GameOver)
+            {
+                actionButtonText = "Restart Game";
+            }
+            else if (Status.GameState == GameState.Joining)
+            {
+                actionButtonText = "Start Game";
+            }
+            currentPlayerName = status.CurrentPlayer;
+            StateHasChanged();
+        });
+
+        hubConnection.On<IEnumerable<BoardTerritory>>(MessageTypes.YourTurnToAttack, async (board) =>
+        {
+            try
+            {
+                (var from, var to) = playerLogic.WhereDoYouWantToAttack(board);
+                await AttackAsync(from, to);
+            }
+            catch
+            {
+                await AttackCompleteAsync();
+            }
+        });
+
+        hubConnection.On<string>(MessageTypes.JoinConfirmation, validatedName =>
+        {
+            playerLogic = new PlayerLogic(validatedName);
+            StateHasChanged();
+        });
+
+        await hubConnection.StartAsync();
+
+        logMessages += "My connection id is " + hubConnection.ConnectionId;
+        if (config["PlayerName"] != null)
+        {
+            userInput = config["PlayerName"];
+            await SignupAsync();
+        }
+    }
+
+    public void SaveSecretCode()
+    {
+        savedSecretCode = true;
+    }
+
+    async Task SignupAsync()
+    {
+        await hubConnection.SendAsync(MessageTypes.Signup, userInput);
+    }
+
+    async Task GameStatusAsync()
+        => await hubConnection.SendAsync(MessageTypes.GetStatus);
+
+    async Task StartGameAsync()
+    {
+        if (Status == null || Status.GameState == GameState.Joining || Status.GameState == GameState.GameOver)
+        {
+            await hubConnection.SendAsync(MessageTypes.RestartGame, secretCode, startOptions);
+            actionButtonText = "Game in progress...";
+            StateHasChanged();
+        }
+    }
+
+    async Task DeployAsync(Location desiredLocation)
+        => await hubConnection.SendAsync(MessageTypes.DeployRequest, desiredLocation);
+
+    async Task AttackAsync(Location from, Location to)
+        => await hubConnection.SendAsync(MessageTypes.AttackRequest, from, to);
+
+    async Task AttackCompleteAsync()
+        => await hubConnection.SendAsync(MessageTypes.AttackComplete);
+}
