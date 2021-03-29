@@ -8,6 +8,7 @@ using Risk.Game;
 using Microsoft.Extensions.Configuration;
 using Risk.Shared;
 using System.Threading;
+using Serilog;
 
 namespace Risk.Server.Hubs
 {
@@ -33,11 +34,13 @@ namespace Risk.Server.Hubs
         {
             try
             {
-                logger.LogInformation(Context.ConnectionId);
+                Log.Logger.Debug(Context.ConnectionId);
+                logger.LogDebug(Context.ConnectionId);
                 await base.OnConnectedAsync();
             }
             catch(Exception ex)
             {
+                Log.Logger.Error(Context.ConnectionId + ": " + ex.Message);
                 logger.LogError(Context.ConnectionId + ": " + ex.Message);
             }
             
@@ -62,11 +65,13 @@ namespace Risk.Server.Hubs
             {
                 await Clients.Client(duplicatePlayer.Token).SendMessage("Server", $"There is already a player registered on your client named {duplicatePlayer.Name}");
                 (duplicatePlayer as Player).Strikes++;
-                logger.LogWarning($"{duplicatePlayer} currently has {(duplicatePlayer as Player).Strikes}. {MaxFailedTries - (duplicatePlayer as Player).Strikes} more strikes will result in being kicked from the game.");
+                logger.LogWarning($"{duplicatePlayer.Name} currently has {(duplicatePlayer as Player).Strikes}. {MaxFailedTries - (duplicatePlayer as Player).Strikes} more strikes will result in being kicked from the game.");
+                Log.Logger.Warning($"{duplicatePlayer.Name} currently has {(duplicatePlayer as Player).Strikes}. {MaxFailedTries - (duplicatePlayer as Player).Strikes} more strikes will result in being kicked from the game.");
             }
             else if(game.GameState == GameState.Deploying || game.GameState == GameState.Attacking)
             {
                 logger.LogError($"For {user}: There's already a game in progress.");
+                Log.Logger.Error($"For {user}: There's already a game in progress.");
                 await Clients.Client(Context.ConnectionId).SendMessage("Server", "There's already a game in progress.  Disconnect then try again once the game has finished.");
             }
             else
@@ -79,7 +84,8 @@ namespace Risk.Server.Hubs
                     i++;
                 }
 
-                logger.LogInformation($"{Context.ConnectionId}: {user}");
+                logger.LogDebug($"{Context.ConnectionId}: {user}");
+                Log.Logger.Debug($"{Context.ConnectionId}: {user}");
 
                 try
                 {
@@ -92,6 +98,7 @@ namespace Risk.Server.Hubs
                 catch(Exception ex)
                 {
                     logger.LogError("Client Connection Exception for Player " + user + ": " + ex.Message);
+                    Log.Logger.Error($"Client Connection Exception for Player {user}: {ex.Message}");
                 }
             }
         }
@@ -142,6 +149,7 @@ namespace Risk.Server.Hubs
                 await BroadCastMessageAsync("The Game has started");
                 game.StartGame();
                 logger.LogInformation("The game has entered the Deployment Phase");
+                Log.Logger.Information("The game has entered the Deployment Phase");
                 await StartDeployPhase();
             }
             else
@@ -162,11 +170,13 @@ namespace Risk.Server.Hubs
             if (game.GameState == GameState.GameOver)
                 return;
 
-            logger.LogInformation("Received DeployRequest from {connectionId}", Context.ConnectionId);
+            logger.LogDebug("Received DeployRequest from {connectionId}", Context.ConnectionId);
+            Log.Logger.Debug($"Received DeployRequest from {Context.ConnectionId}");
 
             if(Context.ConnectionId == currentPlayer.Token)
             {
-                logger.LogInformation($"{Context.ConnectionId} belongs to {currentPlayer}");
+                logger.LogDebug($"{Context.ConnectionId} belongs to {currentPlayer.Name}");
+                Log.Logger.Debug($"{Context.ConnectionId} belongs to {currentPlayer.Name}");
 
                 if(currentPlayer.Strikes >= MaxFailedTries)
                 {
@@ -176,6 +186,7 @@ namespace Risk.Server.Hubs
                         return;
                     }
                     logger.LogInformation("Deployment Phase: {0} has too many strikes.  Booting from game.", currentPlayer.Name);
+                    Log.Logger.Information($"Deployment Phase: {currentPlayer.Name} has too many strikes. {currentPlayer.Name} will be booted from the game.");
                     await Clients.Client(Context.ConnectionId).SendMessage("Server", "Too many bad requests. No risk for you");
                     game.RemovePlayerByToken(currentPlayer.Token);
                     game.RemovePlayerFromBoard(currentPlayer.Token);
@@ -187,30 +198,35 @@ namespace Risk.Server.Hubs
                 {
                     await Clients.All.SendStatus(getStatus());
                     await Clients.Client(Context.ConnectionId).SendMessage("Server", $"Successfully Deployed At {l.Row}, {l.Column}");
-                    logger.LogInformation("{currentPlayer} deployed at {l}", currentPlayer, l);
+                    logger.LogDebug("{currentPlayer} deployed at {l}", currentPlayer, l);
+                    Log.Logger.Debug($"{currentPlayer.Name} deployed at {l}");
 
                     if(game.GameState == GameState.Deploying)
                     {
                         try 
                         {
-                            logger.LogInformation($"{currentPlayer.Name} is now telling next player to deploy.");
+                            logger.LogDebug($"{currentPlayer.Name} is now telling next player to deploy.");
+                            Log.Logger.Debug($"{currentPlayer.Name} is now telling next player to deploy.");
                             await tellNextPlayerToDeploy();
                         }
                         catch(Exception ex)
                         {
                             logger.LogError($"An exception occurred while {currentPlayer.Name} was passing the turn to the next player: {ex.Message}");
+                            Log.Logger.Error($"An exception occurred while {currentPlayer.Name} was passing the turn to the next player: {ex.Message}");
                         }
                     }
                     else
                     {
                         logger.LogInformation("All armies that can be deployed have been deployed.  Game State changing to Attack Phase.");
+                        Log.Logger.Information("All armies that can be deployed have been deployed. Game State changing to Attack Phase.");
                         await StartAttackPhase();
                     }
                 }
                 else
                 {
                     currentPlayer.Strikes++;
-                    logger.LogWarning($"{currentPlayer} tried to deploy at {l} but deploy failed.  Increasing strikes.  You now have {currentPlayer.Strikes} strikes and will be kicked after {MaxFailedTries - currentPlayer.Strikes} more!");
+                    logger.LogWarning($"{currentPlayer.Name} tried to deploy at {l} but deploy failed.  Increasing strikes.  You now have {currentPlayer.Strikes} strikes and will be kicked after {MaxFailedTries - currentPlayer.Strikes} more!");
+                    Log.Logger.Warning($"{currentPlayer.Name} tried to deploy at {l} but deploy failed. Increasing strikes. You now have {currentPlayer.Strikes} strikes and will be kicked after {MaxFailedTries - currentPlayer.Strikes} more!");
                     await Clients.Client(Context.ConnectionId).SendMessage("Server", "Did not deploy successfully");
                     await Clients.Client(currentPlayer.Token).YourTurnToDeploy(game.Board.SerializableTerritories);
                 }
@@ -220,8 +236,9 @@ namespace Risk.Server.Hubs
                 var badPlayer = game.Players.Single(p => p.Token == Context.ConnectionId) as Player;
                 badPlayer.Strikes++;
                 await Clients.Client(badPlayer.Token).SendMessage("Server", "It's not your turn");
-                logger.LogInformation("{badPlayer} tried to deploy when it wasn't their turn.  Increasing invalid request count.  You now have {strikes} strikes!",
+                logger.LogWarning("{badPlayer} tried to deploy when it wasn't their turn.  Increasing invalid request count.  You now have {strikes} strikes!",
                     badPlayer.Name, badPlayer.Strikes);
+                Log.Logger.Warning($"{badPlayer.Name} tried to deploy when it wasn't their turn. Increasing number of strikes. You now have {badPlayer.Strikes} strikes and will be kicked after {MaxFailedTries - currentPlayer.Strikes} more!");
             }
         }
 
@@ -241,6 +258,7 @@ namespace Risk.Server.Hubs
             if(players.Count <= nextPlayerIndex)
             {
                 logger.LogWarning("What happened to all the players?!");
+                Log.Logger.Warning("What happened to all the players?!");
                 await sendGameOverAsync();
                 return;
             }
@@ -261,11 +279,13 @@ namespace Risk.Server.Hubs
             if (game.GameState == GameState.GameOver)
                 return;
 
-            logger.LogInformation($"Received Attack Request from {Context.ConnectionId}");
+            logger.LogDebug($"Received Attack Request from {Context.ConnectionId}");
+            Log.Logger.Debug($"Received Attack Request from {Context.ConnectionId}");
 
             if (Context.ConnectionId == currentPlayer.Token)
             {
-                logger.LogInformation($"{Context.ConnectionId} belongs to {currentPlayer}");
+                logger.LogDebug($"{Context.ConnectionId} belongs to {currentPlayer.Name}");
+                Log.Logger.Debug($"{Context.ConnectionId} belongs to {currentPlayer.Name}");
 
                 game.OutstandingAttackRequestCount--;
 
@@ -277,6 +297,7 @@ namespace Risk.Server.Hubs
                         return;
                     }
                     logger.LogInformation("Attacking Phase: {0} has too many strikes.  Booting from game.", currentPlayer.Name);
+                    Log.Logger.Information($"Attacking Phase: {currentPlayer.Name} has too many strikes. {currentPlayer.Name } will be booted from the game.");
                     await Clients.Client(Context.ConnectionId).SendMessage("Server", $"Too many bad requests. No risk for you");
                     game.RemovePlayerByToken(currentPlayer.Token);
                     game.RemovePlayerFromBoard(currentPlayer.Token);
@@ -296,7 +317,8 @@ namespace Risk.Server.Hubs
                             attackingTerritory = game.Board.GetTerritory(from);
                             defendingTerritory = game.Board.GetTerritory(to);
 
-                            logger.LogInformation($"{currentPlayer.Name} wants to attack from {attackingTerritory} to {defendingTerritory}");
+                            logger.LogDebug($"{currentPlayer.Name} wants to attack from {attackingTerritory.Location} to {defendingTerritory.Location}");
+                            Log.Logger.Debug($"{currentPlayer.Name} wants to attack from {attackingTerritory.Location} to {defendingTerritory.Location}");
 
                             attackResult = game.TryAttack(currentPlayer.Token, attackingTerritory, defendingTerritory);
                             await Clients.All.SendStatus(getStatus());
@@ -308,13 +330,15 @@ namespace Risk.Server.Hubs
                         if (attackResult.AttackInvalid)
                         {
                             currentPlayer.Strikes++;                         
-                            logger.LogWarning($"Invalid attack request! from {attackingTerritory} to {defendingTerritory}. {currentPlayer.Name} now has {currentPlayer.Strikes} and will be kicked after {MaxFailedTries - currentPlayer.Strikes} more strikes!");
+                            logger.LogWarning($"Invalid attack request! from ({attackingTerritory.Location.Row}, {attackingTerritory.Location.Column}) to ({defendingTerritory.Location.Row}, {defendingTerritory.Location.Column}). {currentPlayer.Name} now has {currentPlayer.Strikes} and will be kicked after {MaxFailedTries - currentPlayer.Strikes} more strikes!");
+                            Log.Logger.Warning($"Invalid attack request! from ({attackingTerritory.Location.Row}, {attackingTerritory.Location.Column}) to ({defendingTerritory.Location.Row}, {defendingTerritory.Location.Column}). {currentPlayer.Name} now has {currentPlayer.Strikes} and will be kicked after {MaxFailedTries - currentPlayer.Strikes} more strikes!");
                             await Clients.Client(currentPlayer.Token).SendMessage("Server", $"Invalid attack request: {attackResult.Message} :(  You now have {currentPlayer.Strikes} strike(s)!");
                             await Clients.Client(currentPlayer.Token).YourTurnToAttack(game.Board.SerializableTerritories);
                         }
                         else
                         {
-                            logger.LogInformation($"{currentPlayer} attacked from ({from.Row}), ({from.Column}) to ({to.Row}), ({to.Column})");
+                            logger.LogDebug($"{currentPlayer.Name} attacked from ({from.Row}, {from.Column}) to ({to.Row}, {to.Column})");
+                            Log.Logger.Debug($"{currentPlayer.Name} attacked from ({from.Row}, {from.Column}) to ({to.Row}, {to.Column})");
                             await Clients.Client(Context.ConnectionId).SendMessage("Server", $"Successfully Attacked From ({from.Row}, {from.Column}) To ({to.Row}, {to.Column})");
 
                             if (game.GameState == GameState.Attacking)
@@ -343,6 +367,7 @@ namespace Risk.Server.Hubs
                         catch(Exception ex) 
                         {
                             logger.LogError($"An exception occurred while {currentPlayer.Name} was passing their turn to the next player: {ex.Message}");
+                            Log.Logger.Error($"An exception occurred while {currentPlayer.Name} was passing their turn to the next playier; {ex.Message}");
                         }
                     }
                 }
@@ -355,7 +380,8 @@ namespace Risk.Server.Hubs
             {
                 var badPlayer = game.Players.Single(p => p.Token == Context.ConnectionId) as Player;
                 badPlayer.Strikes++;
-                logger.LogInformation("Player {currentPlayer} tried to play when it's not their turn.  You now have {strikes} strikes!", badPlayer.Name, badPlayer.Strikes);
+                logger.LogWarning("Player {currentPlayer} tried to play when it's not their turn.  You now have {strikes} strikes!", badPlayer.Name, badPlayer.Strikes);
+                Log.Logger.Warning($"{badPlayer.Name} tried to play when it's not their turn. {badPlayer.Name} now has {badPlayer.Strikes} strikes! {MaxFailedTries - badPlayer.Strikes} more and you will be booted from the game!");
                 await Clients.Client(badPlayer.Token).SendMessage("Server", "It's not your turn");
             }
         }
@@ -406,6 +432,7 @@ namespace Risk.Server.Hubs
             game.SetGameOver();
             var status = getStatus();
             logger.LogInformation("Game Over.\n\n{gameStatus}", status);
+            Log.Logger.Information($"Game Over: \n\n {status}");
             var winners = status.PlayerStats.Where(s => s.Score == status.PlayerStats.Max(s => s.Score)).Select(s => s.Name);
             await BroadCastMessageAsync($"Game Over - {string.Join(',', winners)} win{(winners.Count() > 1?"":"s")}!");
             await Clients.All.SendStatus(getStatus());

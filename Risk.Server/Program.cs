@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Serilog;
 
 namespace Risk.Server
 {
@@ -13,6 +14,14 @@ namespace Risk.Server
     {
         public static void Main(string[] args)
         {
+            var configuration = new ConfigurationBuilder()
+               .AddJsonFile("appsettings.json")
+               .Build();
+
+            Log.Logger = new LoggerConfiguration()
+                .ReadFrom.Configuration(configuration)
+                .CreateLogger();
+
             CreateHostBuilder(args).Build().Run();
         }
 
